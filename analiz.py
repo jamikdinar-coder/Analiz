@@ -4,33 +4,27 @@ import plotly.express as px
 import requests
 from datetime import datetime, timedelta
 
-# --- 1. НАСТРОЙКИ ПОДКЛЮЧЕНИЯ (из твоих данных) ---
+# Данные твоего сервера из скриншотов
 API_SECRET = "$4.4$1e90022d47b1211e828b665475bc72b3eb1a84eb"
-# Правильный адрес сервера из твоего скриншота
 BASE_URL = "https://zahratun-jondor.iiko.it:443/resto/api/" 
 
 st.set_page_config(page_title="Zahratun Analytics", layout="wide")
 
-# --- 2. ФУНКЦИИ ДЛЯ РАБОТЫ С API ---
-
-def get_access_token():
-    """Получение токена с исправлением ошибки кодировки UTF-8"""
+def get_token():
+    """Получение токена с правильной кодировкой для русского языка"""
     url = f"{BASE_URL}auth/access_token?apiSecret={API_SECRET}"
     try:
         response = requests.get(url, timeout=10)
-        # Принудительно ставим кодировку cp1251, чтобы не было ошибки декодирования
+        # iiko часто отдает в cp1251, принудительно ставим её
         response.encoding = 'cp1251' 
-        token = response.text.replace('"', '').strip()
-        return token
+        return response.text.replace('"', '').strip()
     except Exception as e:
-        st.error(f"Ошибка подключения к серверу: {e}")
+        st.error(f"Ошибка соединения: {e}")
         return None
 
-def get_sales_report(token):
-    """Запрос реальных продаж через OLAP-отчет"""
+def get_data(token):
+    """Запрос продаж за неделю"""
     url = f"{BASE_URL}reports/olap?access_token={token}"
-    
-    # Запрашиваем данные за последние 7 дней
     payload = {
         "reportType": "SALES",
         "groupByRowFields": ["Date.Typed"],
@@ -44,71 +38,39 @@ def get_sales_report(token):
             }
         }
     }
-    
     try:
         res = requests.post(url, json=payload, timeout=15)
         res.encoding = 'cp1251'
-        data = res.json()
-        
-        # Обработка данных в таблицу
-        df = pd.DataFrame(data['data'])
+        raw_data = res.json()
+        df = pd.DataFrame(raw_data['data'])
         df.columns = ['Дата', 'Выручка', 'Чеки']
         df['Дата'] = pd.to_datetime(df['Дата']).dt.date
         return df
     except Exception as e:
-        st.error(f"Ошибка получения данных: {e}")
+        st.error(f"Ошибка данных: {e}")
         return None
 
-# --- 3. ИНТЕРФЕЙС САЙТА ---
+# --- ИНТЕРФЕЙС ---
+st.title("📊 Zahratun Jondor: Оперативный отчет")
 
-st.title("📊 Zahratun Jondor: Панель Управления")
-st.markdown("---")
-
-# Боковая панель
-with st.sidebar:
-    st.header("Настройки")
-    btn_update = st.button("🔄 Обновить данные из iiko")
-    st.info(f"Версия iiko: v.9\nID: 5930393")
-
-if btn_update:
-    with st.spinner('Синхронизация с сервером...'):
-        token = get_access_token()
-        
-        if token:
-            df = get_sales_report(token)
+if st.sidebar.button("🔄 Обновить данные iiko"):
+    token = get_token()
+    if token:
+        df = get_data(token)
+        if df is not None:
+            st.success("Данные успешно загружены!")
             
-            if df is not None and not df.empty:
-                # Расчет KPI
-                total_rev = df['Выручка'].sum()
-                total_checks = df['Чеки'].sum()
-                avg_check = total_rev / total_checks if total_checks > 0 else 0
-                
-                # Вывод метрик
-                c1, c2, c3 = st.columns(3)
-                c1.metric("Выручка (7 дн)", f"{total_rev:,.0f} сум")
-                c2.metric("Чеков за неделю", f"{total_checks}")
-                c3.metric("Средний чек", f"{avg_check:,.0f} сум")
-                
-                # График выручки
-                st.subheader("Динамика продаж")
-                fig = px.area(df, x='Дата', y='Выручка', 
-                             title="Выручка по дням",
-                             line_shape='spline',
-                             color_discrete_sequence=['#00CC96'])
-                st.plotly_chart(fig, use_container_width=True)
-                
-                # Таблица данных
-                with st.expander("Посмотреть таблицу данных"):
-                    st.dataframe(df.sort_values('Дата', ascending=False), use_container_width=True)
-            else:
-                st.warning("Сервер ответил успешно, но данных за этот период нет.")
-        else:
-            st.error("Не удалось авторизоваться. Проверьте статус сервера iiko.")
-
+            # Метрики
+            c1, c2 = st.columns(2)
+            c1.metric("Выручка за неделю", f"{df['Выручка'].sum():,.0f} сум")
+            c2.metric("Всего чеков", f"{df['Чеки'].sum()}")
+            
+            # График
+            fig = px.line(df, x='Дата', y='Выручка', markers=True, title="Продажи по дням")
+            st.plotly_chart(fig, use_container_width=True)
+            
+            st.dataframe(df, use_container_width=True)
+    else:
+        st.error("Не удалось подключиться. Проверьте API ключ.")
 else:
-    # Состояние покоя
-    st.image("https://ru.iiko.help/download/attachments/70549591/image2019-11-20_12-28-21.png", width=100)
-    st.write("Нажмите кнопку **Обновить данные**, чтобы получить актуальную информацию из iikoCloud.")
-
-st.markdown("---")
-st.caption(f"Zahratun Analytics v2.0 | Последняя проверка: {datetime.now().strftime('%H:%M:%S')}")
+    st.info("Нажмите кнопку 'Обновить данные' в боковом меню.")
