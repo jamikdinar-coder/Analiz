@@ -4,88 +4,70 @@ import plotly.express as px
 import requests
 from datetime import datetime, timedelta
 
-# Твои данные из скриншотов
+# Твои данные
 API_SECRET = "$4.4$1e90022d47b1211e828b665475bc72b3eb1a84eb"
-BASE_URL = "https://zahratun-jondor.iiko.it:443/resto/api"
+# Убираем все лишнее из базового адреса
+BASE_URL = "https://zahratun-jondor.iiko.it/resto/api" 
 
 st.set_page_config(page_title="Zahratun Jondor Analytics", layout="wide")
 
 def get_token():
-    """Получение токена авторизации"""
-    url = f"{BASE_URL}/auth/access_token?apiSecret={API_SECRET}"
-    try:
-        response = requests.get(url, timeout=15)
-        response.encoding = 'cp1251'
-        token = response.text.replace('"', '').strip()
-        return token
-    except Exception as e:
-        st.error(f"Ошибка входа: {e}")
-        return None
+    # Пробуем получить токен. Если первый путь не сработает (404), попробуем запасной.
+    urls = [
+        f"{BASE_URL}/auth/access_token?apiSecret={API_SECRET}",
+        f"https://zahratun-jondor.iiko.it/resto/api/auth/access_token?apiSecret={API_SECRET}"
+    ]
+    for url in urls:
+        try:
+            res = requests.get(url, timeout=10)
+            if res.status_code == 200:
+                return res.text.replace('"', '').strip()
+        except:
+            continue
+    return None
 
-def get_olap_data(token):
-    """Запрос данных по продажам с исправленным параметром 'key'"""
+def get_data(token):
+    # OLAP отчет. Передаем ключ именно так, как просила прошлая ошибка
     url = f"{BASE_URL}/reports/olap"
     
-    date_to = datetime.now().strftime("%Y-%m-%d")
-    date_from = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
-    
-    # ИСПРАВЛЕНИЕ: меняем 'access_token' на 'key', как просит сервер
     params = {
-        "key": token, 
+        "key": token,
         "reportType": "SALES",
         "groupByRowFields": "Date.Typed",
         "aggregateFields": "DishCostAfterDiscount.Sum,UniqTransId.Count",
-        "from": date_from,
-        "to": date_to
+        "from": (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d"),
+        "to": datetime.now().strftime("%Y-%m-%d")
     }
     
     try:
-        res = requests.get(url, params=params, timeout=25)
-        
+        # Пробуем GET, так как он более стабилен для этой версии
+        res = requests.get(url, params=params, timeout=20)
         if res.status_code == 200:
-            data = res.json()
-            if 'data' in data and data['data']:
-                df = pd.DataFrame(data['data'])
+            raw = res.json()
+            if 'data' in raw and raw['data']:
+                df = pd.DataFrame(raw['data'])
                 df.columns = ['Дата', 'Выручка', 'Чеки']
                 df['Дата'] = pd.to_datetime(df['Дата']).dt.date
                 return df
-            else:
-                return "EMPTY"
-        
-        st.error(f"Ошибка сервера ({res.status_code}): {res.text[:150]}")
-        return None
+        st.error(f"Сервер ответил ({res.status_code}): {res.text[:100]}")
     except Exception as e:
-        st.error(f"Ошибка обработки: {e}")
-        return None
+        st.error(f"Ошибка: {e}")
+    return None
 
-# --- ГЛАВНЫЙ ИНТЕРФЕЙС ---
+# --- ИНТЕРФЕЙС ---
 st.title("📊 Zahratun Jondor: Оперативный отчет")
 
 if st.sidebar.button("🔄 Обновить данные iiko"):
-    with st.spinner('Синхронизация с Zahratun Jondor...'):
+    with st.spinner('Подключение к серверу...'):
         token = get_token()
         if token:
-            result = get_olap_data(token)
-            
-            if isinstance(result, pd.DataFrame):
-                st.success("Данные успешно загружены!")
-                
-                # Метрики
-                c1, c2, c3 = st.columns(3)
-                total_rev = result['Выручка'].sum()
-                total_checks = result['Чеки'].sum()
-                c1.metric("Выручка (7 дн)", f"{total_rev:,.0f} сум")
-                c2.metric("Чеков", f"{total_checks}")
-                c3.metric("Средний чек", f"{(total_rev/total_checks if total_checks > 0 else 0):,.0f} сум")
-                
-                # График
-                fig = px.area(result, x='Дата', y='Выручка', markers=True, title="Выручка по дням")
-                st.plotly_chart(fig, use_container_width=True)
-                
-                st.dataframe(result, use_container_width=True)
-            elif result == "EMPTY":
-                st.warning("Сервер подключен, но за последние 7 дней данных о продажах не найдено.")
+            df = get_data(token)
+            if df is not None:
+                st.success("Данные получены!")
+                c1, c2 = st.columns(2)
+                c1.metric("Выручка (7д)", f"{df['Выручка'].sum():,.0f} сум")
+                c2.metric("Чеков", f"{df['Чеки'].sum()}")
+                st.plotly_chart(px.line(df, x='Дата', y='Выручка', markers=True))
+                st.dataframe(df)
         else:
-            st.error("Не удалось получить ключ доступа.")
-else:
-    st.info("Нажмите кнопку 'Обновить данные' для загрузки из iiko.")
+            st.error("Не удалось получить Token. Проверьте связь с сервером.")
