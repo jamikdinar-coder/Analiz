@@ -2,89 +2,93 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import requests
+import json
 from datetime import datetime, timedelta
 
-# Твои данные
+# --- КОНФИГУРАЦИЯ ---
 API_SECRET = "$4.4$1e90022d47b1211e828b665475bc72b3eb1a84eb"
-# Исправил базовый адрес: убираем /api/ в конце, будем добавлять его в функциях
-BASE_URL = "https://zahratun-jondor.iiko.it:443/resto/api" 
+# Исправленный адрес сервера (без лишних слешей)
+BASE_URL = "https://zahratun-jondor.iiko.it:443/resto/api"
 
 st.set_page_config(page_title="Zahratun Jondor Analytics", layout="wide")
 
 def get_token():
-    # Для получения токена обычно используется GET
+    """Получение токена авторизации"""
     url = f"{BASE_URL}/auth/access_token?apiSecret={API_SECRET}"
     try:
         response = requests.get(url, timeout=15)
         response.encoding = 'cp1251'
         return response.text.replace('"', '').strip()
     except Exception as e:
-        st.error(f"Ошибка авторизации: {e}")
+        st.error(f"Ошибка входа: {e}")
         return None
 
-def get_data(token):
-    # В некоторых версиях путь может быть /reports/olap, в других /v2/reports/olap
-    # Попробуем самый надежный для v.9
-    url = f"{BASE_URL}/reports/olap?access_token={token}"
+def get_olap_data(token):
+    """Запрос данных по продажам"""
+    # Для v.9 пробуем передать параметры через URL (Query Params), так как POST дает 405
+    url = f"{BASE_URL}/reports/olap"
     
-    payload = {
+    # Определяем даты
+    date_to = datetime.now().strftime("%Y-%m-%d")
+    date_from = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+    
+    params = {
+        "access_token": token,
         "reportType": "SALES",
-        "groupByRowFields": ["Date.Typed"],
-        "aggregateFields": ["DishCostAfterDiscount.Sum", "UniqTransId.Count"],
-        "filters": {
-            "Date.Typed": {
-                "filterType": "DateRange",
-                "periodType": "CUSTOM",
-                "from": (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d"),
-                "to": datetime.now().strftime("%Y-%m-%d")
-            }
-        }
+        "groupByRowFields": "Date.Typed",
+        "aggregateFields": "DishCostAfterDiscount.Sum,UniqTransId.Count",
+        "from": date_from,
+        "to": date_to
     }
     
     try:
-        # Если POST выдает 405, iiko может ждать данные в GET параметрах, 
-        # но для OLAP это редкость. Скорее всего, дело в адресе.
-        res = requests.post(url, json=payload, timeout=25)
+        # Пробуем GET запрос, так как POST был отклонен сервером
+        res = requests.get(url, params=params, timeout=25)
         
         if res.status_code == 200:
-            raw_data = res.json()
-            df = pd.DataFrame(raw_data['data'])
-            df.columns = ['Дата', 'Выручка', 'Чеки']
-            df['Дата'] = pd.to_datetime(df['Дата']).dt.date
-            return df
-        else:
-            # Выводим подробности, если снова будет ошибка
-            st.error(f"Сервер iiko ответил: {res.status_code}. Текст: {res.text[:100]}")
-            return None
+            data = res.json()
+            if 'data' in data:
+                df = pd.DataFrame(data['data'])
+                df.columns = ['Дата', 'Выручка', 'Чеки']
+                df['Дата'] = pd.to_datetime(df['Дата']).dt.date
+                return df
+        
+        # Если GET не сработал, выводим что сказал сервер для отладки
+        st.error(f"Ошибка сервера ({res.status_code}): {res.text[:150]}")
+        return None
     except Exception as e:
-        st.error(f"Ошибка при обработке отчета: {e}")
+        st.error(f"Ошибка обработки: {e}")
         return None
 
-# --- ИНТЕРФЕЙС ---
+# --- ГЛАВНЫЙ ИНТЕРФЕЙС ---
 st.title("📊 Zahratun Jondor: Оперативный отчет")
 
 if st.sidebar.button("🔄 Обновить данные iiko"):
-    with st.spinner('Запрос к Zahratun Jondor...'):
+    with st.spinner('Запрашиваю данные у iiko...'):
         token = get_token()
         if token:
-            df = get_data(token)
-            if df is not None:
-                st.success("Данные успешно получены!")
+            df = get_olap_data(token)
+            if df is not None and not df.empty:
+                st.success("Данные успешно синхронизированы!")
                 
                 # Метрики
+                c1, c2, c3 = st.columns(3)
                 total_rev = df['Выручка'].sum()
                 total_checks = df['Чеки'].sum()
-                c1, c2, c3 = st.columns(3)
-                c1.metric("Выручка (7д)", f"{total_rev:,.0f} сум")
-                c2.metric("Чеков", f"{total_checks}")
-                c3.metric("Средний чек", f"{(total_rev/total_checks if total_checks > 0 else 0):,.0f}")
+                c1.metric("Выручка (7 дн)", f"{total_rev:,.0f} сум")
+                c2.metric("Всего чеков", f"{total_checks}")
+                c3.metric("Средний чек", f"{(total_rev/total_checks if total_checks > 0 else 0):,.0f} сум")
                 
                 # График
-                fig = px.area(df, x='Дата', y='Выручка', title="Продажи за неделю")
+                fig = px.line(df, x='Дата', y='Выручка', markers=True, 
+                             line_shape='spline', title="Динамика продаж")
                 st.plotly_chart(fig, use_container_width=True)
                 
+                # Таблица
                 st.dataframe(df, use_container_width=True)
+            else:
+                st.info("Данных за выбранный период не найдено.")
         else:
-            st.error("Не удалось получить ключ доступа (Token).")
+            st.error("Не удалось получить доступ к серверу.")
 else:
-    st.info("Нажмите кнопку слева для загрузки.")
+    st.info("Нажмите кнопку 'Обновить данные' для старта.")
