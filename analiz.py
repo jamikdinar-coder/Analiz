@@ -5,45 +5,42 @@ import requests
 from datetime import datetime, timedelta
 import urllib3
 
-# Отключаем проверку SSL (для локальных и самоподписанных сертификатов iiko)
+# Отключаем проверку SSL
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# --- ДАННЫЕ ПОДКЛЮЧЕНИЯ ---
+# --- ДАННЫЕ ИЗ ВАШЕЙ ЛИЦЕНЗИИ ---
 API_SECRET = "$4.4$1e90022d47b1211e828b665475bc72b3eb1a84eb"
 SERVER = "zahratun-jondor.iiko.it"
+ORG_ID = "5930393" # Из вашей лицензии
 
 st.set_page_config(page_title="Zahratun Jondor Analytics", layout="wide")
 
-def get_session():
-    """
-    Авторизация и получение сессии. 
-    Используем requests.Session(), чтобы куки (cookie key) сохранялись автоматически.
-    """
+def get_auth():
+    """Пробуем авторизоваться и получить токен"""
     session = requests.Session()
-    # Пробуем порты: 443 (стандарт), 8080 (iiko), 443 (http)
-    variants = [
+    # Список адресов для проверки (стандартный и порт 8080)
+    urls = [
         f"https://{SERVER}/resto/api/auth/access_token?apiSecret={API_SECRET}",
-        f"http://{SERVER}:8080/resto/api/auth/access_token?apiSecret={API_SECRET}",
         f"https://{SERVER}:8080/resto/api/auth/access_token?apiSecret={API_SECRET}"
     ]
     
-    for url in variants:
+    for url in urls:
         try:
             res = session.get(url, timeout=10, verify=False)
             if res.status_code == 200:
                 token = res.text.replace('"', '').strip()
-                return session, token
-        except Exception:
+                return session, token, url.replace("/auth/access_token", "")
+        except:
             continue
-    return None, None
+    return None, None, None
 
-def get_report_data(session, token):
-    """Получение OLAP-отчета"""
-    # Базовый URL определяем по тому, как прошла авторизация (в данном примере берем https)
-    url = f"https://{SERVER}/resto/api/reports/olap"
+def get_sales_report(session, token, base_url):
+    """Запрос данных о продажах"""
+    report_url = f"{base_url}/reports/olap"
     
+    # Параметры для iiko v.9
     params = {
-        "key": token, # Токен в строке запроса
+        "key": token,
         "reportType": "SALES",
         "groupByRowFields": "Date.Typed",
         "aggregateFields": "DishCostAfterDiscount.Sum,UniqTransId.Count",
@@ -52,50 +49,44 @@ def get_report_data(session, token):
     }
     
     try:
-        # Передаем сессию, которая уже содержит куки авторизации
-        res = session.get(url, params=params, verify=False, timeout=20)
+        # Важно: добавляем заголовок для JSON
+        res = session.get(report_url, params=params, headers={"Accept": "application/json"}, verify=False)
         if res.status_code == 200:
-            # Если сервер прислал XML (стандартно для iiko), пытаемся прочитать как JSON
-            try:
-                data = res.json()
-                if 'data' in data:
-                    df = pd.DataFrame(data['data'])
-                    df.columns = ['Дата', 'Выручка', 'Чеки']
-                    df['Дата'] = pd.to_datetime(df['Дата']).dt.date
-                    return df
-            except:
-                st.error("Сервер прислал данные в формате XML вместо JSON. Нужно настроить заголовки.")
+            data = res.json()
+            if 'data' in data:
+                df = pd.DataFrame(data['data'])
+                df.columns = ['Дата', 'Выручка', 'Чеки']
+                df['Дата'] = pd.to_datetime(df['Дата']).dt.date
+                return df
+        else:
+            st.error(f"Ошибка отчета: {res.status_code}")
     except Exception as e:
-        st.error(f"Ошибка при получении отчета: {e}")
+        st.error(f"Ошибка запроса: {e}")
     return None
 
 # --- ИНТЕРФЕЙС ---
-st.title("📊 Zahratun Jondor Analytics")
+st.title(f"📊 Аналитика: Zahratun Jondor (ID {ORG_ID})")
 
-if st.sidebar.button("🔄 Синхронизировать"):
-    with st.spinner("Подключение к серверу..."):
-        session, token = get_session()
+if st.sidebar.button("🔄 Обновить данные"):
+    with st.spinner("Авторизация..."):
+        session, token, base_url = get_auth()
         
         if token:
-            st.sidebar.success("Авторизация успешна!")
-            df = get_report_data(session, token)
+            st.sidebar.success("✅ Подключено!")
+            df = get_sales_report(session, token, base_url)
             
             if df is not None:
-                st.metric("Выручка за неделю", f"{df['Выручка'].sum():,.0f} сум")
-                st.plotly_chart(px.bar(df, x='Дата', y='Выручка'))
-                st.dataframe(df)
+                # Метрики
+                c1, c2 = st.columns(2)
+                c1.metric("Выручка (7 дн)", f"{df['Выручка'].sum():,.0f} сум")
+                c2.metric("Чеков (7 дн)", f"{df['Чеки'].sum()}")
                 
-                # Логаут в конце сессии (как в вашей документации)
-                logout_url = f"https://{SERVER}/resto/api/logout?key={token}"
-                session.get(logout_url, verify=False)
+                # График
+                st.plotly_chart(px.line(df, x='Дата', y='Выручка', title="Тренд выручки"))
+                st.dataframe(df, use_container_width=True)
+                
+                # Выход (как просили в документации)
+                session.get(f"{base_url}/auth/logout?key={token}", verify=False)
         else:
-            st.error("❌ Сбой подключения.")
-            st.info("""
-            **Почему это не работает прямо сейчас?**
-            Браузер и код получают отказ (Connection Refused). 
-            1. Порт 8080 на сервере zahratun-jondor.iiko.it закрыт.
-            2. Сервер не принимает запросы с вашего текущего IP.
-            
-            **Решение:** Покажите ваш скриншот с ошибкой «Connection Refused» техподдержке iiko. 
-            Они должны «пробросить порт» или добавить ваш IP в список разрешенных.
-            """)
+            st.error("❌ Сервер iiko сбрасывает соединение.")
+            st.warning("Лицензия API у вас есть, но порт 8080/443 закрыт сетевым экраном iikoCloud.")
