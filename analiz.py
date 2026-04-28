@@ -4,34 +4,33 @@ import plotly.express as px
 import requests
 from datetime import datetime, timedelta
 
-# Твои данные из скриншотов
+# Твои данные
 API_SECRET = "$4.4$1e90022d47b1211e828b665475bc72b3eb1a84eb"
-SERVER_HOST = "zahratun-jondor.iiko.it"
+SERVER = "zahratun-jondor.iiko.it"
 
-st.set_page_config(page_title="Zahratun Jondor Analytics", layout="wide")
+st.set_page_config(page_title="Zahratun Analytics Pro", layout="wide")
 
 def get_token():
-    # Пробуем два самых частых варианта пути для версии 9.4
-    paths = [
-        f"https://{SERVER_HOST}/resto/api/auth/access_token?apiSecret={API_SECRET}",
-        f"https://{SERVER_HOST}:443/resto/api/auth/access_token?apiSecret={API_SECRET}"
+    # Мы пробуем все варианты путей, которые бывают в iiko 9.4
+    variants = [
+        f"https://{SERVER}/resto/api/auth/access_token?apiSecret={API_SECRET}",
+        f"https://{SERVER}:443/resto/api/auth/access_token?apiSecret={API_SECRET}",
+        f"https://{SERVER}/api/0/auth/access_token?apiSecret={API_SECRET}"
     ]
     
-    for url in paths:
+    for url in variants:
         try:
             res = requests.get(url, timeout=10)
             if res.status_code == 200:
-                # Очищаем токен от кавычек и пробелов
+                # Убираем кавычки, если они есть
                 return res.text.replace('"', '').strip()
         except:
             continue
     return None
 
 def get_data(token):
-    # Путь для получения OLAP-отчета
-    url = f"https://{SERVER_HOST}/resto/api/reports/olap"
-    
-    # Параметры запроса (для iiko 9.x часто лучше работает GET)
+    # Если токен получили, пробуем забрать отчет
+    url = f"https://{SERVER}/resto/api/reports/olap"
     params = {
         "key": token,
         "reportType": "SALES",
@@ -44,39 +43,35 @@ def get_data(token):
     try:
         res = requests.get(url, params=params, timeout=20)
         if res.status_code == 200:
-            raw = res.json()
-            if 'data' in raw and raw['data']:
-                df = pd.DataFrame(raw['data'])
+            data = res.json()
+            if 'data' in data and data['data']:
+                df = pd.DataFrame(data['data'])
                 df.columns = ['Дата', 'Выручка', 'Чеки']
                 df['Дата'] = pd.to_datetime(df['Дата']).dt.date
                 return df
         st.error(f"Сервер ответил ({res.status_code}): {res.text[:100]}")
     except Exception as e:
-        st.error(f"Ошибка при загрузке отчета: {e}")
+        st.error(f"Ошибка отчета: {e}")
     return None
 
 # --- ИНТЕРФЕЙС ---
-st.title("📊 Zahratun Jondor: Оперативный отчет")
+st.title("📊 Zahratun Jondor: Live Analytics")
 
-if st.sidebar.button("🔄 Обновить данные iiko"):
-    with st.spinner('Подключаюсь к филиалу Jondor...'):
+if st.sidebar.button("🔄 Обновить из iiko"):
+    with st.spinner('Проверяю все каналы связи с Jondor...'):
         token = get_token()
         if token:
             df = get_data(token)
             if df is not None:
-                st.success("Данные успешно синхронизированы!")
+                st.success("✅ Соединение установлено, данные получены!")
                 
-                col1, col2, col3 = st.columns(3)
-                rev = df['Выручка'].sum()
-                checks = df['Чеки'].sum()
+                col1, col2 = st.columns(2)
+                col1.metric("Выручка (7д)", f"{df['Выручка'].sum():,.0f} сум")
+                col2.metric("Всего чеков", f"{df['Чеки'].sum()}")
                 
-                col1.metric("Выручка (7д)", f"{rev:,.0f} сум")
-                col2.metric("Чеков", f"{checks}")
-                col3.metric("Средний чек", f"{(rev/checks if checks > 0 else 0):,.0f}")
-                
-                st.plotly_chart(px.area(df, x='Дата', y='Выручка', title="Продажи за неделю"))
+                st.plotly_chart(px.area(df, x='Дата', y='Выручка', title="Продажи"))
                 st.dataframe(df, use_container_width=True)
         else:
-            st.error("Не удалось получить Token. Проверьте, включен ли сервер в Jondor.")
+            st.error("❌ Не удалось найти API. Проверь, запущен ли iikoServer на компьютере в ресторане.")
 else:
-    st.info("Нажмите кнопку слева, чтобы затянуть данные из iiko.")
+    st.info("Нажмите кнопку для синхронизации.")
