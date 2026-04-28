@@ -26,11 +26,11 @@ def get_token():
         st.error(f"Connection Error: {e}")
     return None
 
-def get_data(token):
-    url = f"{BASE_URL}/reports/olap"
-    # Essential for iiko to return JSON instead of XML
-    headers = {"Accept": "application/json"}
-    
+def test_connection():
+    url = f"https://{SERVER}/resto/api/auth/access_token?apiSecret={API_SECRET}"
+    res = requests.get(url, verify=False)
+    st.write(f"Статус: {res.status_code}")
+    st.write(f"Ответ: {res.text}")
     # Define date range
     date_from = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
     date_to = datetime.now().strftime("%Y-%m-%d")
