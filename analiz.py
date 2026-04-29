@@ -8,37 +8,39 @@ import urllib3
 # Отключаем проверку SSL
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# --- ДАННЫЕ ИЗ ВАШЕЙ ЛИЦЕНЗИИ ---
-API_SECRET = "$4.4$1e90022d47b1211e828b665475bc72b3eb1a84eb"
+# --- ДАННЫЕ ПОДКЛЮЧЕНИЯ ---
 SERVER = "zahratun-jondor.iiko.it"
-ORG_ID = "5930393" # Из вашей лицензии
+USER_LOGIN = "jamshid"
+USER_PASS = "02051987"
 
 st.set_page_config(page_title="Zahratun Jondor Analytics", layout="wide")
 
-def get_auth():
-    """Пробуем авторизоваться и получить токен"""
-    session = requests.Session()
-    # Список адресов для проверки (стандартный и порт 8080)
+def get_auth_token():
+    """
+    Авторизация через логин и пароль (классический API iiko).
+    """
+    # Пробуем разные варианты URL, так как сервер может быть настроен по-разному
     urls = [
-        f"https://{SERVER}/resto/api/auth/access_token?apiSecret={API_SECRET}",
-        f"https://{SERVER}:8080/resto/api/auth/access_token?apiSecret={API_SECRET}"
+        f"https://{SERVER}/resto/api/auth/login?login={USER_LOGIN}&pass={USER_PASS}",
+        f"http://{SERVER}:8080/resto/api/auth/login?login={USER_LOGIN}&pass={USER_PASS}"
     ]
     
+    session = requests.Session()
     for url in urls:
         try:
             res = session.get(url, timeout=10, verify=False)
             if res.status_code == 200:
+                # iiko возвращает токен в виде простой строки
                 token = res.text.replace('"', '').strip()
-                return session, token, url.replace("/auth/access_token", "")
-        except:
+                return session, token, url.split('/resto')[0]
+        except Exception:
             continue
     return None, None, None
 
-def get_sales_report(session, token, base_url):
-    """Запрос данных о продажах"""
-    report_url = f"{base_url}/reports/olap"
+def get_sales_data(session, token, base_url):
+    """Запрос OLAP отчета по продажам"""
+    url = f"{base_url}/resto/api/reports/olap"
     
-    # Параметры для iiko v.9
     params = {
         "key": token,
         "reportType": "SALES",
@@ -49,8 +51,8 @@ def get_sales_report(session, token, base_url):
     }
     
     try:
-        # Важно: добавляем заголовок для JSON
-        res = session.get(report_url, params=params, headers={"Accept": "application/json"}, verify=False)
+        # Указываем, что хотим получить JSON
+        res = session.get(url, params=params, headers={"Accept": "application/json"}, verify=False)
         if res.status_code == 200:
             data = res.json()
             if 'data' in data:
@@ -58,35 +60,33 @@ def get_sales_report(session, token, base_url):
                 df.columns = ['Дата', 'Выручка', 'Чеки']
                 df['Дата'] = pd.to_datetime(df['Дата']).dt.date
                 return df
-        else:
-            st.error(f"Ошибка отчета: {res.status_code}")
     except Exception as e:
-        st.error(f"Ошибка запроса: {e}")
+        st.error(f"Ошибка получения данных: {e}")
     return None
 
 # --- ИНТЕРФЕЙС ---
-st.title(f"📊 Аналитика: Zahratun Jondor (ID {ORG_ID})")
+st.title("📊 Zahratun Jondor: Оперативная аналитика")
 
-if st.sidebar.button("🔄 Обновить данные"):
-    with st.spinner("Авторизация..."):
-        session, token, base_url = get_auth()
+if st.sidebar.button("🔄 Обновить отчет"):
+    with st.spinner("Авторизация сотрудника..."):
+        session, token, base_url = get_auth_token()
         
         if token:
-            st.sidebar.success("✅ Подключено!")
-            df = get_sales_report(session, token, base_url)
+            st.sidebar.success(f"Вход выполнен: {USER_LOGIN}")
+            df = get_sales_data(session, token, base_url)
             
             if df is not None:
-                # Метрики
-                c1, c2 = st.columns(2)
-                c1.metric("Выручка (7 дн)", f"{df['Выручка'].sum():,.0f} сум")
-                c2.metric("Чеков (7 дн)", f"{df['Чеки'].sum()}")
+                # Отображение результатов
+                col1, col2 = st.columns(2)
+                col1.metric("Выручка (неделя)", f"{df['Выручка'].sum():,.0f} сум")
+                col2.metric("Кол-во чеков", f"{df['Чеки'].sum()}")
                 
-                # График
-                st.plotly_chart(px.line(df, x='Дата', y='Выручка', title="Тренд выручки"))
+                st.plotly_chart(px.bar(df, x='Дата', y='Выручка', title="Продажи по дням"))
                 st.dataframe(df, use_container_width=True)
                 
-                # Выход (как просили в документации)
-                session.get(f"{base_url}/auth/logout?key={token}", verify=False)
+                # Завершение сессии (Logout)
+                session.get(f"{base_url}/resto/api/auth/logout?key={token}", verify=False)
         else:
-            st.error("❌ Сервер iiko сбрасывает соединение.")
-            st.warning("Лицензия API у вас есть, но порт 8080/443 закрыт сетевым экраном iikoCloud.")
+            st.error("❌ Ошибка подключения.")
+            st.warning("Сервер по-прежнему сбрасывает соединение (Connection Refused).")
+            st.info("Пожалуйста, убедитесь, что в iikoOffice у пользователя 'jamshid' стоит галочка 'Разрешить вход в iikoFront/iikoOffice' и есть права на работу с API.")
