@@ -19,9 +19,7 @@ USER_PASS: str = st.secrets.get("USER_PASS", "02051987")
 # ====================== СЕССИЯ ======================
 @st.cache_data(ttl=600, show_spinner=False)
 def get_iiko_session() -> Optional[Tuple[requests.Session, str, str]]:
-    """Авторизация в iiko (пароль передаётся как SHA-1 хэш)"""
     session = requests.Session()
-
     pass_sha1 = hashlib.sha1(USER_PASS.encode("utf-8")).hexdigest()
 
     urls = [
@@ -61,7 +59,6 @@ def get_iiko_session() -> Optional[Tuple[requests.Session, str, str]]:
 # ====================== ДАННЫЕ ======================
 @st.cache_data(ttl=300, show_spinner="Загрузка данных из iiko...")
 def fetch_sales(period_days: int = 7) -> Optional[pd.DataFrame]:
-    """Получение продаж из iiko OLAP"""
     session_data = get_iiko_session()
     if not session_data:
         return None
@@ -69,26 +66,27 @@ def fetch_sales(period_days: int = 7) -> Optional[pd.DataFrame]:
     session, token, base_url = session_data
     today = datetime.now()
 
+    # ✅ Формат дат dd.MM.yyyy — именно такой ожидает iiko
     if period_days == 999:          # Этот месяц
-        date_from = today.replace(day=1).strftime("%Y-%m-%d")
-        date_to   = today.strftime("%Y-%m-%d")
+        date_from = today.replace(day=1).strftime("%d.%m.%Y")
+        date_to   = today.strftime("%d.%m.%Y")
     elif period_days == 998:        # Прошлый месяц
         first_this = today.replace(day=1)
         last_prev  = first_this - timedelta(days=1)
-        date_from  = last_prev.replace(day=1).strftime("%Y-%m-%d")
-        date_to    = last_prev.strftime("%Y-%m-%d")
+        date_from  = last_prev.replace(day=1).strftime("%d.%m.%Y")
+        date_to    = last_prev.strftime("%d.%m.%Y")
     else:
-        date_from = (today - timedelta(days=period_days)).strftime("%Y-%m-%d")
-        date_to   = today.strftime("%Y-%m-%d")
+        date_from = (today - timedelta(days=period_days)).strftime("%d.%m.%Y")
+        date_to   = today.strftime("%d.%m.%Y")
 
     params: Dict[str, Any] = {
-        "key":               token,
-        "reportType":        "SALES",
-        "groupByRowFields":  "OpenDate.Typed",
-        "aggregateFields":   "Sum,UniqOrderId.Count",
-        "from":              date_from,
-        "to":                date_to,
-        "buildSummary":      "false",
+        "key":              token,
+        "reportType":       "SALES",
+        "groupByRowFields": "OpenDate.Typed",
+        "aggregateFields":  "Sum,UniqOrderId.Count",
+        "from":             date_from,
+        "to":               date_to,
+        "buildSummary":     "false",
     }
 
     try:
@@ -111,10 +109,10 @@ def fetch_sales(period_days: int = 7) -> Optional[pd.DataFrame]:
 
         df = pd.DataFrame(raw["data"])
         df.columns = ["Дата", "Выручка", "Чеки"]
-        df["Дата"]         = pd.to_datetime(df["Дата"]).dt.date
-        df["Выручка"]      = pd.to_numeric(df["Выручка"], errors="coerce").round(0)
-        df["Чеки"]         = pd.to_numeric(df["Чеки"],    errors="coerce").astype("Int64")
-        df["Средний чек"]  = (df["Выручка"] / df["Чеки"]).round(0)
+        df["Дата"]        = pd.to_datetime(df["Дата"]).dt.date
+        df["Выручка"]     = pd.to_numeric(df["Выручка"], errors="coerce").round(0)
+        df["Чеки"]        = pd.to_numeric(df["Чеки"],    errors="coerce").astype("Int64")
+        df["Средний чек"] = (df["Выручка"] / df["Чеки"]).round(0)
         df = df.sort_values("Дата").reset_index(drop=True)
         return df
 
@@ -127,7 +125,6 @@ def fetch_sales(period_days: int = 7) -> Optional[pd.DataFrame]:
 st.set_page_config(page_title="Продажи — iiko", layout="wide")
 st.title("📊 Анализ продаж из iiko")
 
-# --- Боковая панель ---
 with st.sidebar:
     st.header("Настройки отчёта")
 
@@ -156,23 +153,19 @@ with st.sidebar:
         st.cache_data.clear()
         st.rerun()
 
-# --- Основная часть ---
 df = fetch_sales(period_days=selected_days)
 
 if df is not None and not df.empty:
-
-    # KPI-карточки
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.metric("Общая выручка",  f"{df['Выручка'].sum():,.0f} ₽")
+        st.metric("Общая выручка", f"{df['Выручка'].sum():,.0f} ₽")
     with col2:
-        st.metric("Всего чеков",    f"{df['Чеки'].sum():,}")
+        st.metric("Всего чеков",   f"{df['Чеки'].sum():,}")
     with col3:
-        st.metric("Средний чек",    f"{df['Средний чек'].mean():,.0f} ₽")
+        st.metric("Средний чек",   f"{df['Средний чек'].mean():,.0f} ₽")
     with col4:
-        st.metric("Дней в отчёте",  len(df))
+        st.metric("Дней в отчёте", len(df))
 
-    # Графики
     st.subheader("Динамика продаж")
     tab1, tab2 = st.tabs(["Выручка", "Чеки и средний чек"])
 
@@ -188,7 +181,6 @@ if df is not None and not df.empty:
         )
         st.plotly_chart(fig2, use_container_width=True)
 
-    # Таблица
     st.subheader("Детальные данные")
     st.dataframe(
         df.style.format({"Выручка": "{:,.0f}", "Средний чек": "{:,.0f}"}),
